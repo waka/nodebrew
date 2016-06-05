@@ -56,6 +56,8 @@ sub init {
     $self->{current} = $self->{brew_dir} . '/current';
     $self->{default_dir} = $self->{brew_dir} . '/default';
     $self->{alias_file} = $self->{brew_dir} . '/alias';
+    $self->{envised_file} = $self->{brew_dir} . '/envised';
+    $self->{version_file} = $self->{brew_dir} . '/version';
     $self->{bash_completion_dir} = $self->{brew_dir} . '/completions/bash';
     $self->{zsh_completion_dir} = $self->{brew_dir} . '/completions/zsh';
     $self->{fish_completion_dir} = $self->{brew_dir} . '/completions/fish';
@@ -375,6 +377,21 @@ sub _cmd_exec {
     exit $? >> 8;
 }
 
+sub _cmd_envise {
+    my ($self, $args) = @_;
+
+    if (-e $self->{envised_file}) {
+      print "\nalready envised\n";
+      return;
+    }
+
+    $self->write_version_file;
+    $self->rehash;
+    $self->make_file('', $self->{envised_file});
+
+    print "\nEnvised successfully\n";
+}
+
 sub _cmd_help {
     my ($self, $args) = @_;
 
@@ -386,7 +403,8 @@ Usage:
     nodebrew install <version>            Download and install <version> (compile from source)
     nodebrew install-binary <version>     Download and install <version> (binary file)
     nodebrew uninstall <version>          Uninstall <version>
-    nodebrew use <version>                Use <version>
+    nodebrew use <version>                Use <version> for global
+    nodebrew local <version>              Use <version> for local
     nodebrew list                         List installed versions
     nodebrew ls                           Alias for `list`
     nodebrew ls-remote                    List remote versions
@@ -397,6 +415,7 @@ Usage:
     nodebrew selfupdate                   Update nodebrew
     nodebrew migrate-package <version>    Install global NPM packages contained in <version> to current version
     nodebrew exec <version> -- <command>  Execute <command> using specified <version>
+    nodebrew envise                       Restructure for using local version
 
 Example:
     # install from binary
@@ -559,12 +578,6 @@ sub fetch_nodebrew {
     $self->make_file($fish_completion, $fish_completion_path);
 }
 
-sub make_file {
-    my ($self, $content, $dest) = @_;
-    open my $fh, '>', $dest or die "Error: $!";
-    print $fh $content;
-}
-
 sub get_local_version {
     my ($self, $type) = @_;
 
@@ -642,6 +655,44 @@ sub get_packages {
     return @packages;
 }
 
+sub rehash {
+    my ($self) = @_;
+
+    my $version = $self->read_version_file;
+    if ($version eq 'none') {
+      return;
+    }
+
+    my $install_dir = $self->get_install_dir($version =~ s/^io@// ? 'iojs' : 'node');
+    my $bin_script_dir = "$install_dir/$version/bin";
+
+    unlink "$bin_script_dir/nodebrew", if -l "$bin_script_dir/nodebrew";
+    unlink $self->{current} if -l $self->{current};
+    rmtree $self->{current} if -d $self->{current};
+    mkdir $self->{current} unless -e $self->{current};
+    mkdir "$self->{current}/bin" unless -e "$self->{current}/bin";
+
+    opendir my $dh, $bin_script_dir or die $!;
+    while (my $file = readdir $dh) {
+        if (-f $file && !$file =~ /^\./) {
+            $self->make_bin_script("$self->{current}/bin/$file");
+        }
+    }
+
+    my $nodebrew_path = "$self->{current}/bin/nodebrew";
+    symlink "$self->{brew_dir}/nodebrew", $nodebrew_path unless -l $nodebrew_path;
+}
+
+sub make_bin_script {
+    my ($self, $dest) = @_;
+    my $content = <<"...";
+#!/usr/bin/env perl
+use strict;
+use warnings;
+...
+    $self->make_file($content, $dest);
+}
+
 sub error_and_exit {
     my $msg = shift;
 
@@ -659,6 +710,42 @@ sub normalize_version {
     }
 
     return $v =~ m/^\d+\.?(\d+|x)?\.?(\d+|x)?$/ ? "v$v" : $v;
+}
+
+sub write_version_file {
+    my ($self) = @_;
+
+    if (-e $self->{version_file}) {
+        return;
+    }
+
+    my $version = $self->get_current_version;
+    $self->make_file($version, $self->{version_file});
+
+    return $version;
+}
+
+sub read_version_file {
+    my ($self) = @_;
+    return $self->read_file($self->{version_file});
+}
+
+sub make_file {
+    my ($self, $content, $dest) = @_;
+    open my $fh, '>', $dest or die "Error: $!";
+    print $fh $content;
+}
+
+sub read_file {
+    my ($self, $file) = @_;
+
+    if (-e $file) {
+        open my $fh, '<', $file or die "Error: $!";
+        my $str = do { local $/; <$fh> };
+        close $fh;
+        return $str;
+    }
+    return '';
 }
 
 package Nodebrew::Utils;
